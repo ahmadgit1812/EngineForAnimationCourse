@@ -1,0 +1,898 @@
+diff --git a/cmake-build-debug/tutorial/glfw/src/glfw_config.h b/cmake-build-debug/tutorial/glfw/src/glfw_config.h
+new file mode 100644
+index 0000000..b1563d7
+--- /dev/null
++++ b/cmake-build-debug/tutorial/glfw/src/glfw_config.h
+@@ -0,0 +1,58 @@
++//========================================================================
++// GLFW 3.4 - www.glfw.org
++//------------------------------------------------------------------------
++// Copyright (c) 2010-2016 Camilla Löwy <elmindreda@glfw.org>
++//
++// This software is provided 'as-is', without any express or implied
++// warranty. In no event will the authors be held liable for any damages
++// arising from the use of this software.
++//
++// Permission is granted to anyone to use this software for any purpose,
++// including commercial applications, and to alter it and redistribute it
++// freely, subject to the following restrictions:
++//
++// 1. The origin of this software must not be misrepresented; you must not
++//    claim that you wrote the original software. If you use this software
++//    in a product, an acknowledgment in the product documentation would
++//    be appreciated but is not required.
++//
++// 2. Altered source versions must be plainly marked as such, and must not
++//    be misrepresented as being the original software.
++//
++// 3. This notice may not be removed or altered from any source
++//    distribution.
++//
++//========================================================================
++// As glfw_config.h.in, this file is used by CMake to produce the
++// glfw_config.h configuration header file.  If you are adding a feature
++// requiring conditional compilation, this is where to add the macro.
++//========================================================================
++// As glfw_config.h, this file defines compile-time option macros for a
++// specific platform and development environment.  If you are using the
++// GLFW CMake files, modify glfw_config.h.in instead of this file.  If you
++// are using your own build system, make this file define the appropriate
++// macros in whatever way is suitable.
++//========================================================================
++
++// Define this to 1 if building GLFW for X11
++/* #undef _GLFW_X11 */
++// Define this to 1 if building GLFW for Win32
++/* #undef _GLFW_WIN32 */
++// Define this to 1 if building GLFW for Cocoa
++#define _GLFW_COCOA
++// Define this to 1 if building GLFW for Wayland
++/* #undef _GLFW_WAYLAND */
++// Define this to 1 if building GLFW for OSMesa
++/* #undef _GLFW_OSMESA */
++
++// Define this to 1 to use Vulkan loader linked statically into application
++/* #undef _GLFW_VULKAN_STATIC */
++
++// Define this to 1 to force use of high-performance GPU on hybrid systems
++/* #undef _GLFW_USE_HYBRID_HPG */
++
++// Define this to 1 if xkbcommon supports the compose key
++/* #undef HAVE_XKBCOMMON_COMPOSE_H */
++// Define this to 1 if the libc supports memfd_create()
++/* #undef HAVE_MEMFD_CREATE */
++
+diff --git a/engine/Mesh.cpp b/engine/Mesh.cpp
+index a50e45b..140c3af 100644
+--- a/engine/Mesh.cpp
++++ b/engine/Mesh.cpp
+@@ -1,13 +1,341 @@
+ #include "Mesh.h"
+ #include <utility>
+ #include "ObjLoader.h"
++#include "igl/edge_flaps.h"
++#include "igl/parallel_for.h"
++#include "igl/shortest_edge_and_midpoint.h"
++#include "igl/collapse_edge.h"
++#include <igl/vertex_triangle_adjacency.h>
++#include "igl/per_vertex_normals.h"
++#include <igl/per_face_normals.h>
++#include <igl/decimate_callback_types.h>
++#include <circulation.h>
+ 
+ 
+ namespace cg3d
+ {
+ 
+ Mesh::Mesh(std::string name, Eigen::MatrixXd vertices, Eigen::MatrixXi faces, Eigen::MatrixXd vertexNormals, Eigen::MatrixXd textureCoords)
+-        : name(std::move(name)), data{{vertices, faces, vertexNormals, textureCoords}} {}
++        : name(std::move(name)), data{{vertices, faces, vertexNormals, textureCoords}} {
++    Mesh::initMeshDataStructure();
++}
++
++void Mesh::initMeshDataStructure() {
++
++        meshDataStructure.F = Eigen::MatrixXi(data[0].faces);
++        meshDataStructure.V = Eigen::MatrixXd(data[0].vertices);
++        igl::edge_flaps(meshDataStructure.F,meshDataStructure.E,meshDataStructure.EMAP,meshDataStructure.EF,meshDataStructure.EI);
++        Q_Matrix_for_vertices_init();
++        Q_heap_init();
++        marked_edges = Eigen::VectorXi::Zero(meshDataStructure.E.rows());
++        meshDataStructure.num_of_edges = meshDataStructure.E.rows();
++
++        
++
++}
++
++void Mesh::tutorial_initMeshDataStructure(){
++    meshDataStructure.F = Eigen::MatrixXi(data[0].faces);
++    meshDataStructure.V = Eigen::MatrixXd(data[0].vertices);
++
++    igl::edge_flaps(meshDataStructure.F,meshDataStructure.E,meshDataStructure.EMAP,meshDataStructure.EF,meshDataStructure.EI);
++    meshDataStructure.C.resize(meshDataStructure.E.rows(),meshDataStructure.V.cols());
++    Eigen::VectorXd costs(meshDataStructure.E.rows());
++    // https://stackoverflow.com/questions/2852140/priority-queue-clear-method
++    // Q.clear();
++    meshDataStructure.Q_tutorial = {};
++    meshDataStructure.EQ_tutorial = Eigen::VectorXi::Zero(meshDataStructure.E.rows());
++    {
++        Eigen::VectorXd costs(meshDataStructure.E.rows());
++        igl::parallel_for(meshDataStructure.E.rows(),[&](const int e)
++        {
++            double cost = e;
++            Eigen::RowVectorXd p(1,3);
++            igl::shortest_edge_and_midpoint(e,meshDataStructure.V,meshDataStructure.F,meshDataStructure.E,meshDataStructure.EMAP,meshDataStructure.EF,meshDataStructure.EI,cost,p);
++            meshDataStructure.C.row(e) = p;
++            costs(e) = cost;
++        },10000);
++        for(int e = 0;e<meshDataStructure.E.rows();e++)
++        {
++            meshDataStructure.Q_tutorial.emplace(costs(e),e,0);
++        }
++    }
++}
++
++
++void Mesh::C_Matrix_for_edges_init() {
++    meshDataStructure.C.resize(meshDataStructure.E.rows(), meshDataStructure.V.cols());
++    for(int i=0; i<meshDataStructure.E.rows(); i++){
++        meshDataStructure.C.row(i) = 0.5*(meshDataStructure.V.row(meshDataStructure.E(i,0))+meshDataStructure.V.row(meshDataStructure.E(i,1)));
++    }
++
++}
++
++void Mesh::Q_heap_init(){
++    C_Matrix_for_edges_init();
++    for(int i=0; i< meshDataStructure.E.rows(); i++){
++        meshDataStructure.Q.push(std::tuple<double , int>(calculate_edge_cost(i), i));
++    }
++}
++
++double Mesh::calculate_edge_cost(int edge_index){
++    int edge_v0 = meshDataStructure.E(edge_index,0);
++    int edge_v1 = meshDataStructure.E(edge_index,1);
++
++    Eigen::Matrix4d edge_matrix = meshDataStructure.Q_Matrix_for_vertices[edge_v0]
++            + meshDataStructure.Q_Matrix_for_vertices[edge_v1];
++
++    Eigen::Matrix4d temp_matrix = Eigen::Matrix4d(edge_matrix);
++    temp_matrix(3,0)=0;
++    temp_matrix(3,1)=0;
++    temp_matrix(3,2)=0;
++    temp_matrix(3,3)=1;
++    if(temp_matrix.determinant() != 0){
++        Eigen::Vector4d new_vertex_position = temp_matrix.inverse() *Eigen::Vector4d(0,0,0,1);
++        meshDataStructure.C(edge_index,0) =new_vertex_position(0);
++        meshDataStructure.C(edge_index,1) =new_vertex_position(1);
++        meshDataStructure.C(edge_index,2) =new_vertex_position(2);
++        Eigen::RowVector4d new_vertex_position_transpose = new_vertex_position.transpose();
++        return new_vertex_position_transpose * edge_matrix * new_vertex_position;
++    }else{
++
++        // middle vertex cost calc
++        Eigen::Vector4d new_vertex_position =
++                Eigen::Vector4d(meshDataStructure.C.row(edge_index)(0), meshDataStructure.C.row(edge_index)(1),
++                                meshDataStructure.C.row(edge_index)(2), 1);
++
++        Eigen::RowVector4d new_vertex_position_transpose = new_vertex_position.transpose();
++        double middle_val = new_vertex_position_transpose * edge_matrix * new_vertex_position;
++
++        // v0 vertex cost calc
++        Eigen::Vector4d v0 = Eigen::Vector4d(meshDataStructure.V.row(edge_v0)(0), meshDataStructure.V.row(edge_v0)(1),
++                                             meshDataStructure.V.row(edge_v0)(2), 1);
++        Eigen::RowVector4d v0_transpose = v0.transpose();
++        double v0_val = v0_transpose * meshDataStructure.Q_Matrix_for_vertices[edge_v0] * v0;
++
++        // v1 vertex cost calc
++        Eigen::Vector4d v1 = Eigen::Vector4d(meshDataStructure.V.row(edge_v1)(0), meshDataStructure.V.row(edge_v1)(1),
++                                             meshDataStructure.V.row(edge_v1)(2), 1);
++
++        Eigen::RowVector4d v1_transpose = v1.transpose();
++        double v1_val = v1_transpose * meshDataStructure.Q_Matrix_for_vertices[edge_v1] * v1;
++
++        // choosing lowest vertex cost
++        int min_val = std::min(std::min(v0_val, v1_val), middle_val);
++        if (min_val == v0_val) {
++            meshDataStructure.C.row(edge_index) = meshDataStructure.V.row(edge_v0);
++            return v0_val;
++        }
++
++        if (min_val == v1_val) {
++            meshDataStructure.C.row(edge_index) = meshDataStructure.V.row(edge_v1);
++            return v1_val;
++        }
++        return middle_val;
++    }
++}
++
++void Mesh::Q_Matrix_for_vertices_init(){
++
++    std::vector<std::vector<int>> vertex_adjacency;
++    vertex_adjacency.resize(meshDataStructure.V.rows());
++    for(int fi=0; fi<meshDataStructure.F.rows(); ++fi)
++    {
++        for(int i = 0; i < meshDataStructure.F.cols(); ++i)
++        {
++            vertex_adjacency[meshDataStructure.F(fi,i)].push_back(fi);
++
++        }
++    }
++    Eigen::MatrixXd faces_normals;
++    igl::per_face_normals(meshDataStructure.V, meshDataStructure.F, faces_normals);
++
++
++    for(int i=0; i< meshDataStructure.V.rows(); i++){
++        meshDataStructure.Q_Matrix_for_vertices.push_back(Eigen::Matrix4d::Zero());
++        calculate_Q_matrix_for_vertex(i, vertex_adjacency[i], faces_normals);
++    }
++
++}
++
++void Mesh::calculate_Q_matrix_for_vertex(int vertex_index, std::vector<int>& vertex_adjacency, Eigen::MatrixXd & faces_normals){
++
++        for(int i=0; i<vertex_adjacency.size(); i++){
++            Eigen::Vector3d curr_normal = faces_normals.row(vertex_adjacency[i]).normalized();
++
++            Eigen::MatrixXd p;
++            p.resize(4,1);
++
++            p << curr_normal[0] , curr_normal[1], curr_normal[2],((meshDataStructure.V.row(vertex_index) * curr_normal)*-1);
++
++            Eigen::MatrixXd p_transpose = p.transpose();
++            Eigen::Matrix4d kp = p * p_transpose;
++            meshDataStructure.Q_Matrix_for_vertices[vertex_index] = meshDataStructure.Q_Matrix_for_vertices[vertex_index] + kp;
++        }
++}
++
++int Mesh::tutorial_simplify(int num_of_faces){
++
++        int num_collapsed=0;
++        bool something_collapsed = false;
++        int data_max_index = -1;
++        if(!meshDataStructure.Q_tutorial.empty())
++        {
++            // collapse edge
++            const int max_iter = num_of_faces;
++            for(int j = 0;j<max_iter;j++)
++            {
++                if(!igl::collapse_edge(igl::shortest_edge_and_midpoint,meshDataStructure.V,meshDataStructure.F,meshDataStructure.E,meshDataStructure.EMAP,meshDataStructure.EF,meshDataStructure.EI,meshDataStructure.Q_tutorial,meshDataStructure.EQ_tutorial,meshDataStructure.C))
++                    break;
++
++                something_collapsed = true;
++                num_collapsed++;
++            }
++
++            if(something_collapsed)
++             {
++
++                 Eigen::MatrixXd vertexNormalsTemp;
++                 vertexNormalsTemp.resize(0,0);
++                 Eigen::MatrixXd textureCoordsTemp;
++                 textureCoordsTemp.resize(0,0);
++                 textureCoordsTemp = data[0].textureCoords;
++
++                 igl::per_vertex_normals(meshDataStructure.V, meshDataStructure.F, vertexNormalsTemp);
++                 data.push_back({Eigen::MatrixXd(meshDataStructure.V), Eigen::MatrixXi(meshDataStructure.F), vertexNormalsTemp , textureCoordsTemp});
++                 data_max_index = data.size()-1;
++             }
++
++        }
++        return data_max_index;
++}
++
++
++int Mesh::simplify(int num_of_faces){
++    int num_collapsed=0;
++    bool something_collapsed = false;
++    int data_max_index = -1;
++
++    if(!meshDataStructure.Q.empty())
++    {
++        for(int j = 0;j<num_of_faces;j++)
++        {
++            if(!collapse_edge())
++                break;
++
++
++            something_collapsed = true;
++            num_collapsed++;
++        }
++        if(something_collapsed)
++        {
++
++            Eigen::MatrixXd vertexNormalsTemp;
++            vertexNormalsTemp.resize(0,0);
++            Eigen::MatrixXd textureCoordsTemp;
++            textureCoordsTemp.resize(0,0);
++            textureCoordsTemp = data[0].textureCoords;
++
++            igl::per_vertex_normals(meshDataStructure.V, meshDataStructure.F, vertexNormalsTemp);
++            data.push_back({Eigen::MatrixXd(meshDataStructure.V), Eigen::MatrixXi(meshDataStructure.F), vertexNormalsTemp , textureCoordsTemp});
++            data_max_index = data.size()-1;
++        }
++    }
++    return data_max_index;
++}
++
++bool Mesh::collapse_edge(){
++
++    if(meshDataStructure.Q.empty()) return false;
++    std::tuple<double , int> min_edge = meshDataStructure.Q.top();
++    meshDataStructure.Q.pop();
++
++
++    double min_edge_cost = std::get<0>(min_edge);
++    int min_edge_index = std::get<1>(min_edge);
++
++
++    if(min_edge_cost==std::numeric_limits<double>::infinity())
++        return false;
++
++    if(marked_edges[min_edge_index] == -1)
++        return collapse_edge();
++
++    if(marked_edges[min_edge_index] == 1)
++    {
++        update_marked_edge(min_edge_index);
++        return collapse_edge();
++    }
++
++    int first_vertex_index = meshDataStructure.E(min_edge_index, 0);
++    int sec_vertex_index = meshDataStructure.E(min_edge_index, 1);
++
++    std::vector<int> surrounding_faces1 = igl::circulation(min_edge_index, true, meshDataStructure.EMAP, meshDataStructure.EF, meshDataStructure.EI);
++
++    std::vector<int> surrounding_faces2 = igl::circulation(min_edge_index, false, meshDataStructure.EMAP, meshDataStructure.EF, meshDataStructure.EI);
++
++    int f1,f2 ,e1,e2;
++
++    Eigen::Vector3d new_v_position = meshDataStructure.C.row(min_edge_index);
++    if(igl::collapse_edge(min_edge_index, new_v_position, meshDataStructure.V,
++                          meshDataStructure.F, meshDataStructure.E, meshDataStructure.EMAP,
++                          meshDataStructure.EF, meshDataStructure.EI, e1, e2, f1, f2)){
++
++        marked_edges[min_edge_index] = -1;
++        marked_edges[e1] = -1;
++        marked_edges[e2] = -1;
++        meshDataStructure.num_of_edges = meshDataStructure.num_of_edges-3;
++
++        Eigen::Matrix4d Q12 = meshDataStructure.Q_Matrix_for_vertices[first_vertex_index] + meshDataStructure.Q_Matrix_for_vertices[sec_vertex_index];
++        meshDataStructure.Q_Matrix_for_vertices[first_vertex_index] = Q12;
++        meshDataStructure.Q_Matrix_for_vertices[sec_vertex_index] = Q12;
++
++        for(int i=0; i <surrounding_faces1.size(); i++)
++                mark_face_edges(surrounding_faces1[i],first_vertex_index,sec_vertex_index);
++
++        for(int i=1; i <surrounding_faces2.size()-1; i++)
++                mark_face_edges(surrounding_faces2[i],first_vertex_index,sec_vertex_index);
++
++        std::cout <<"edge "<< min_edge_index<< ", cost = "<< min_edge_cost << ", new v position ";
++        std::cout << "("<< new_v_position(0)<<","<<new_v_position(1)<<","<<new_v_position(2)<< ")"<<std::endl;
++        return true;
++
++    }
++    else{
++        meshDataStructure.Q.push(std::tuple<double , int>(std::numeric_limits<double>::infinity(), min_edge_index) );
++        return false;
++    }
++
++}
++
++void Mesh::update_marked_edge(int edge_index){
++    meshDataStructure.C.row(edge_index) = 0.5*(meshDataStructure.V.row(meshDataStructure.E(edge_index,0))+meshDataStructure.V.row(meshDataStructure.E(edge_index,1)));
++    marked_edges[edge_index]=0;
++    meshDataStructure.Q.push(std::tuple<double , int>(calculate_edge_cost(edge_index), edge_index));
++}
++
++void Mesh::mark_face_edges(int face_index, int first_vertex_index, int sec_vertex_index){
++    if(!((meshDataStructure.F(face_index,0) ==meshDataStructure.F(face_index,1)) &&
++         (meshDataStructure.F(face_index,1) ==meshDataStructure.F(face_index,2))
++         && (meshDataStructure.F(face_index,2) == 0 ))) {
++
++        for (int i = 0; i < 3; i++) {
++            int num_of_faces = meshDataStructure.F.rows();
++            int edge_index = meshDataStructure.EMAP(face_index + (i * num_of_faces));
++            bool edge_is_connected_to_v1 = meshDataStructure.E(edge_index, 0) == first_vertex_index ||
++                                           meshDataStructure.E(edge_index, 1) == first_vertex_index;
++            bool edge_is_connected_to_v2 = meshDataStructure.E(edge_index, 0) == sec_vertex_index ||
++                                           meshDataStructure.E(edge_index, 1) == sec_vertex_index;
++            if (marked_edges[edge_index] != -1 && (edge_is_connected_to_v1 || edge_is_connected_to_v2))
++                marked_edges[edge_index] = 1;
++        }
++    }
++
++}
++
++
++
++
+ 
+ const std::shared_ptr<Mesh>& Mesh::Plane()
+ {
+diff --git a/engine/Mesh.h b/engine/Mesh.h
+index ef943c9..7c63967 100644
+--- a/engine/Mesh.h
++++ b/engine/Mesh.h
+@@ -4,11 +4,32 @@
+ #include <iostream>
+ #include <utility>
+ #include <vector>
++#include <igl/min_heap.h>
+ 
+ 
+ namespace cg3d
+ {
+ 
++
++struct MeshDataStructure
++{
++    Eigen::MatrixXd V; // Vertices of the mesh (#V x 3)
++    Eigen::MatrixXi F; // Faces of the mesh (#F x 3)
++    Eigen::MatrixXi E; // edges <index of source vertex, index of des/na/on vertex>
++    Eigen::VectorXi EMAP; // connects faces to edges
++    Eigen::MatrixXi EF; // connects edges to faces
++    Eigen::MatrixXi EI; // connects edge to vertex index in triangle (0,1,2)
++    igl::min_heap< std::tuple<double,int> > Q; // priority queue Q
++    std::vector<Eigen::Matrix4d > Q_Matrix_for_vertices;
++    Eigen::MatrixXd C; // position of the new vertex after collapsing the corresponding edge (in model coordinates).
++    int num_of_edges;
++
++
++    // tutorial data
++    igl::min_heap< std::tuple<double,int, int> > Q_tutorial; // priority queue Q
++    Eigen::VectorXi EQ_tutorial; // maybe should delete
++};
++
+ struct MeshData
+ {
+     const Eigen::MatrixXd vertices; // Vertices of the mesh (#V x 3)
+@@ -21,18 +42,42 @@ class Mesh
+ {
+ public:
+     std::string name;
+-
+     std::vector<MeshData> data;
++    MeshDataStructure meshDataStructure;
+ 
+     Mesh(std::string name, Eigen::MatrixXd vertices, Eigen::MatrixXi faces, Eigen::MatrixXd vertexNormals, Eigen::MatrixXd textureCoords);
+-    Mesh(std::string name, std::vector<MeshData> data) : name(std::move(name)), data(std::move(data)) {};
++    Mesh(std::string name, std::vector<MeshData> data) : name(std::move(name)), data(std::move(data)) { initMeshDataStructure();};
+     Mesh(const Mesh& mesh) = default;
+ 
++
+     static const std::shared_ptr<Mesh>& Plane();
+     static const std::shared_ptr<Mesh>& Cube();
+     static const std::shared_ptr<Mesh>& Tetrahedron();
+     static const std::shared_ptr<Mesh>& Octahedron();
+     static const std::shared_ptr<Mesh>& Cylinder();
++
++
++    int simplify(int num_of_faces);
++    int tutorial_simplify(int num_of_faces);
++
++
++private:
++
++    void initMeshDataStructure();
++    void tutorial_initMeshDataStructure();
++    void Q_Matrix_for_vertices_init();
++    void calculate_Q_matrix_for_vertex(int vertex_index, std::vector<int>& vertex_adjacency, Eigen::MatrixXd & faces_normals);
++
++    void C_Matrix_for_edges_init();
++    void Q_heap_init();
++    double calculate_edge_cost(int edge_index);
++    bool collapse_edge();
++
++    void mark_face_edges(int face_index, int first_vertex_index, int sec_vertex_index);
++    void update_marked_edge(int edge_index);
++
++
++    Eigen::VectorXi marked_edges;
+ };
+ 
+ } // namespace cg3d
+diff --git a/engine/Model.h b/engine/Model.h
+index e2f7a78..eb8f536 100644
+--- a/engine/Model.h
++++ b/engine/Model.h
+@@ -41,9 +41,11 @@ public:
+     bool showWireframe = false;
+     Eigen::Vector4f wireframeColor{0, 0, 0, 0};
+     int meshIndex = 0;
++    int meshMaxIndex = 0;
++
+ 
+     inline std::shared_ptr<Mesh> GetMesh(int index = 0) const { return meshList[index]; }
+-    inline const std::vector<std::shared_ptr<Mesh>>& GetMeshList() const { return meshList; }
++    inline std::vector<std::shared_ptr<Mesh>> GetMeshList() const { return meshList; }
+     void SetMeshList(std::vector<std::shared_ptr<Mesh>> _meshList);
+     void UpdateDataAndDrawMeshes(const Program& program, bool _showFaces, bool bindTextures); // helper function
+ 
+diff --git a/engine/Scene.cpp b/engine/Scene.cpp
+index eac9682..e14c78e 100644
+--- a/engine/Scene.cpp
++++ b/engine/Scene.cpp
+@@ -114,10 +114,14 @@ void Scene::KeyCallback(Viewport* viewport, int x, int y, int key, int scancode,
+                 glfwSetWindowShouldClose(window, GLFW_TRUE);
+                 break;
+             case GLFW_KEY_UP:
+-                camera->RotateInSystem(system, 0.1f, Axis::X);
++                if(pickedModel != nullptr)
++                    pickedModel->meshIndex = std::min(pickedModel->meshMaxIndex, pickedModel->meshIndex+1);
++                //camera->RotateInSystem(system, 0.1f, Axis::X);
+                 break;
+             case GLFW_KEY_DOWN:
+-                camera->RotateInSystem(system, -0.1f, Axis::X);
++                if(pickedModel != nullptr)
++                    pickedModel->meshIndex = std::max(0, pickedModel->meshIndex-1);
++                //camera->RotateInSystem(system, -0.1f, Axis::X);
+                 break;
+             case GLFW_KEY_LEFT:
+                 camera->RotateInSystem(system, 0.1f, Axis::Y);
+@@ -143,6 +147,20 @@ void Scene::KeyCallback(Viewport* viewport, int x, int y, int key, int scancode,
+             case GLFW_KEY_F:
+                 camera->TranslateInSystem(system, {0, 0, -0.05f});
+                 break;
++            case GLFW_KEY_SPACE:
++                if(pickedModel != nullptr) {
++                    std::vector<std::shared_ptr<Mesh>> meshList = pickedModel->GetMeshList();
++                    int max_data_index = -1;
++                    for (auto &mesh: meshList)
++                        max_data_index = std::max(mesh->simplify(std::ceil(mesh->meshDataStructure.num_of_edges * 0.1)), max_data_index);
++
++                    if (max_data_index > -1) {
++                        pickedModel->SetMeshList(meshList);
++                        pickedModel->meshIndex = max_data_index;
++                        pickedModel->meshMaxIndex = max_data_index ;
++                    }
++                }
++                break;
+         }
+     }
+ }
+diff --git a/external/eigen/Eigen/src/Core/DenseCoeffsBase.h b/external/eigen/Eigen/src/Core/DenseCoeffsBase.h
+index c4af48a..8fd3450 100644
+--- a/external/eigen/Eigen/src/Core/DenseCoeffsBase.h
++++ b/external/eigen/Eigen/src/Core/DenseCoeffsBase.h
+@@ -7,6 +7,7 @@
+ // Public License v. 2.0. If a copy of the MPL was not distributed
+ // with this file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ 
++
+ #ifndef EIGEN_DENSECOEFFSBASE_H
+ #define EIGEN_DENSECOEFFSBASE_H
+ 
+diff --git a/tutorial/CMakeLists.txt b/tutorial/CMakeLists.txt
+index a198c86..b9b8622 100644
+--- a/tutorial/CMakeLists.txt
++++ b/tutorial/CMakeLists.txt
+@@ -30,3 +30,5 @@ add_subdirectory(Demo)
+ 
+ add_subdirectory(Example1)
+ 
++
++add_subdirectory(MeshSimplification)
+diff --git a/tutorial/Example1/BasicScene.cpp b/tutorial/Example1/BasicScene.cpp
+index 9f6ae64..35b4331 100644
+--- a/tutorial/Example1/BasicScene.cpp
++++ b/tutorial/Example1/BasicScene.cpp
+@@ -30,8 +30,10 @@ void BasicScene::Init(float fov, int width, int height, float near, float far)
+  
+     material->AddTexture(0, "textures/box0.bmp", 2);
+     auto sphereMesh{IglLoader::MeshFromFiles("sphere_igl", "data/sphere.obj")};
+-    auto cylMesh{IglLoader::MeshFromFiles("cyl_igl","data/camel_b.obj")};
++    auto cylMesh{IglLoader::MeshFromFiles("cyl_igl","data/arm.obj")};
+     auto cubeMesh{IglLoader::MeshFromFiles("cube_igl","data/cube.off")};
++
++    auto cubeMesh1 = Mesh::Cube();
+     
+     sphere1 = Model::Create( "sphere",sphereMesh, material);
+     cyl = Model::Create( "cyl", cylMesh, material);
+@@ -40,7 +42,7 @@ void BasicScene::Init(float fov, int width, int height, float near, float far)
+     sphere1->showWireframe = true;
+     sphere1->Translate({-3,0,0});
+     cyl->Translate({3,0,0});
+-    cyl->Scale(0.12f);
++    cyl->Scale(3.0f);
+     cyl->showWireframe = true;
+     cube->showWireframe = true;
+     camera->Translate(20, Axis::Z);
+@@ -55,7 +57,7 @@ void BasicScene::Init(float fov, int width, int height, float near, float far)
+   // If an edge were collapsed, we'd collapse it to these points:
+     Eigen::MatrixXd V, C;
+     int num_collapsed;
+-
++  /*
+   // Function to reset original mesh and data structures
+     V = mesh[0]->data[0].vertices;
+     F = mesh[0]->data[0].faces;
+@@ -68,6 +70,7 @@ void BasicScene::Init(float fov, int width, int height, float near, float far)
+     std::cout<< "edges to faces: \n" << EF.transpose() <<std::endl;
+     std::cout<< "faces to edges: \n "<< EMAP.transpose()<<std::endl;
+     std::cout<< "edges indices: \n" << EI.transpose() <<std::endl;
++    */
+ 
+ }
+ 
+@@ -76,5 +79,7 @@ void BasicScene::Update(const Program& program, const Eigen::Matrix4f& proj, con
+     Scene::Update(program, proj, view, model);
+     program.SetUniform4f("lightColor", 1.0f, 1.0f, 1.0f, 0.5f);
+     program.SetUniform4f("Kai", 1.0f, 1.0f, 1.0f, 1.0f);
+-    //cube->Rotate(0.01f, Axis::All);
++    cube->Rotate(0.001f, Axis::XYZ);
++    sphere1->Rotate(0.01f, Axis::XYZ);
++    cyl->Rotate(0.01f, Axis::Y);
+ }
+diff --git a/tutorial/MeshSimplification/BasicScene.cpp b/tutorial/MeshSimplification/BasicScene.cpp
+new file mode 100644
+index 0000000..f492381
+--- /dev/null
++++ b/tutorial/MeshSimplification/BasicScene.cpp
+@@ -0,0 +1,22 @@
++#include "BasicScene.h"
++
++using namespace cg3d;
++
++void BasicScene::Init(float fov, int width, int height, float near, float far)
++{
++    camera = Camera::Create("camera", fov, float(width) / float(height), near, far);
++    auto program = std::make_shared<Program>("shaders/basicShader");
++    auto material = std::make_shared<Material>("material", program); // empty material
++    cube = Model::Create("cube", Mesh::Cube(), material);
++    AddChild(cube);
++
++    camera->Translate(15, Axis::Z);
++    cube->Scale(3);
++}
++
++void BasicScene::Update(const Program& program, const Eigen::Matrix4f& proj, const Eigen::Matrix4f& view, const Eigen::Matrix4f& model)
++{
++    Scene::Update(program, proj, view, model);
++
++    cube->Rotate(0.01f, Axis::XYZ);
++}
+diff --git a/tutorial/MeshSimplification/BasicScene.h b/tutorial/MeshSimplification/BasicScene.h
+new file mode 100644
+index 0000000..b7a970d
+--- /dev/null
++++ b/tutorial/MeshSimplification/BasicScene.h
+@@ -0,0 +1,16 @@
++#pragma once
++
++#include "Scene.h"
++
++#include <utility>
++
++class BasicScene : public cg3d::Scene
++{
++public:
++    explicit BasicScene(std::string name, cg3d::Display* display) : Scene(std::move(name), display) {};
++    void Init(float fov, int width, int height, float near, float far);
++    void Update(const cg3d::Program& program, const Eigen::Matrix4f& proj, const Eigen::Matrix4f& view, const Eigen::Matrix4f& model) override;
++
++private:
++    std::shared_ptr<cg3d::Model> cube;
++};
+diff --git a/tutorial/MeshSimplification/CMakeLists.txt b/tutorial/MeshSimplification/CMakeLists.txt
+new file mode 100644
+index 0000000..97300a3
+--- /dev/null
++++ b/tutorial/MeshSimplification/CMakeLists.txt
+@@ -0,0 +1,11 @@
++get_filename_component(PROJECT_NAME ${CMAKE_CURRENT_SOURCE_DIR} NAME)
++
++message(STATUS "Creating target: ${PROJECT_NAME}")
++
++project(${PROJECT_NAME})
++set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}) # set the binary directory to build folder
++file(GLOB ${PROJECT_NAME}_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp ${CMAKE_CURRENT_SOURCE_DIR}/*.h*)
++add_executable(${PROJECT_NAME}_bin ${${PROJECT_NAME}_SOURCES})
++target_link_libraries(${PROJECT_NAME}_bin engine igl::core igl::opengl igl::opengl_glfw igl::opengl_glfw_imgui igl::png)
++set_target_properties(${PROJECT_NAME}_bin PROPERTIES CXX_STANDARD 20)
++set_property(TARGET ${PROJECT_NAME}_bin PROPERTY VS_DEBUGGER_WORKING_DIRECTORY "$(SolutionDir)")
+diff --git a/tutorial/MeshSimplification/IglMeshLoader.cpp b/tutorial/MeshSimplification/IglMeshLoader.cpp
+new file mode 100644
+index 0000000..bf0b557
+--- /dev/null
++++ b/tutorial/MeshSimplification/IglMeshLoader.cpp
+@@ -0,0 +1,83 @@
++#include "IglMeshLoader.h"
++//#include <per_vertex_normals.h>
++#include <barycentric_coordinates.h>
++#include <vector>
++
++#pragma warning(push, 3)
++#pragma warning (disable: 4244) // disable annoying warnings from OBJ_Loader.h
++// note: do not move this include file to ObjLoader.h (header-only library - will cause linker errors)
++#pragma warning(pop)
++#include "igl/read_triangle_mesh.h"
++#include "igl/per_vertex_normals.h"
++#include "Mesh.h"
++#include "Model.h"
++#include <memory>
++#include <algorithm>
++
++
++namespace cg3d
++{
++
++// MeshData IglLoader::MeshDataLoader(const objl::Mesh& loadedMesh)
++// {
++//     const auto& vertices = loadedMesh.Vertices;
++//     const auto& indices = loadedMesh.Indices;
++
++//     Eigen::MatrixXd V(vertices.size(), 3);
++//     Eigen::MatrixXi F(indices.size() / 3, 3);
++//     Eigen::MatrixXd V_normals(vertices.size(), 3);
++//     Eigen::MatrixXd V_uv(vertices.size(), 2);
++
++//     // import the vertices data
++//     int j = 0;
++//     for (const auto& vertex: vertices) {
++//         V(j, 0) = vertex.Position.X;
++//         V(j, 1) = vertex.Position.Y;
++//         V(j, 2) = vertex.Position.Z;
++//         V_normals(j, 0) = vertex.Normal.X;
++//         V_normals(j, 1) = vertex.Normal.Y;
++//         V_normals(j, 2) = vertex.Normal.Z;
++//         V_uv(j, 0) = vertex.TextureCoordinate.X;
++//         V_uv(j, 1) = vertex.TextureCoordinate.Y;
++//         j++;
++//     }
++
++//     // import the faces data
++//     F.resize(int(indices.size()) / 3, 3);
++//     j = 0;
++//     for (auto index: indices) {
++//         F(j / 3, j % 3) = int(index);
++//         j++;
++//     }
++
++//     // todo: add face normals?
++
++//     return {V, F, V_normals, V_uv};
++// }
++
++
++std::shared_ptr<Mesh> IglLoader::MeshLoader(std::string name, const std::vector<std::string>& files)
++{    
++//    objl::Loader loader;
++    std::vector<MeshData> dataList;
++    Eigen::MatrixXd vertices;
++    Eigen::MatrixXi faces;
++    Eigen::MatrixXd vertexNormals;
++    Eigen::MatrixXd textureCoords;
++    for (const auto& file: files) {
++        igl::read_triangle_mesh(file,vertices,faces);
++        igl::per_vertex_normals(vertices,faces,vertexNormals);
++        textureCoords = Eigen::MatrixXd::Zero(vertices.rows(),2);
++        // std::vector<MeshData> moreData;
++        //MeshData moreData;
++        //moreData.vertices = vertices;
++
++        dataList.push_back({vertices,faces,vertexNormals,textureCoords});
++        // std::move(moreData.begin(), moreData.end(), std::back_inserter(dataList));
++    }
++
++    return std::make_shared<Mesh>(std::move(name), dataList);
++}
++
++
++} // namespace cg3d
+diff --git a/tutorial/MeshSimplification/IglMeshLoader.h b/tutorial/MeshSimplification/IglMeshLoader.h
+new file mode 100644
+index 0000000..467b7c1
+--- /dev/null
++++ b/tutorial/MeshSimplification/IglMeshLoader.h
+@@ -0,0 +1,42 @@
++#pragma  once
++
++#include <string>
++#include <memory>
++#include <utility>
++#include <vector>
++
++
++// namespace objl
++// {
++// class Loader;
++
++// struct Mesh;
++// }
++
++namespace cg3d
++{
++
++struct MeshData;
++class Mesh;
++class Model;
++class Material;
++
++struct IglLoader
++{
++    //static MeshData MeshDataLoader(const objl::Mesh& loadedMesh);
++    static std::shared_ptr<Mesh> MeshLoader(std::string name, const std::vector<std::string>& files);
++    //static std::shared_ptr<Mesh> MeshFromObj(std::string name, std::istream& in);
++    //static std::shared_ptr<Mesh> MeshFromObjLoader(std::string name, objl::Loader& loader);
++
++    // static std::shared_ptr<Mesh> MeshFromObjLoader(std::string name, const objl::Mesh& loadedMesh);
++    // static std::shared_ptr<Model> ModelFromObj(std::string name, const std::string& file, std::shared_ptr<Material> material);
++    // static std::shared_ptr<Model> ModelFromObj(std::string name, std::istream& in, std::shared_ptr<Material> material);
++    // static std::shared_ptr<Model> ModelFromObjLoader(std::string name, objl::Loader& loader, std::shared_ptr<Material> material);
++
++    template<typename... T> static std::shared_ptr<Mesh> MeshFromFiles(std::string name, const T&... files) {
++        std::string strings[]{files...};
++        return MeshLoader(std::move(name), std::vector<std::string>({strings, strings + sizeof(strings) / sizeof(strings[0])}));
++    }
++};
++
++} // namespace cg3d
+diff --git a/tutorial/MeshSimplification/MeshSimplification.cpp b/tutorial/MeshSimplification/MeshSimplification.cpp
+new file mode 100644
+index 0000000..e67c507
+--- /dev/null
++++ b/tutorial/MeshSimplification/MeshSimplification.cpp
+@@ -0,0 +1,63 @@
++#include "Renderer.h"
++#include "Display.h"
++
++#define SCENE BasicScene // the scene (class name) to display
++
++#define STRINGIFY(X) #X
++#define CLASS_NAME_TO_HEADER(X) STRINGIFY(X.h)
++#include CLASS_NAME_TO_HEADER(SCENE)
++
++
++using namespace cg3d;
++
++int main()
++{
++    const int DISPLAY_WIDTH = 800;
++    const int DISPLAY_HEIGHT = 800;
++    const float CAMERA_ANGLE = 45.0f;
++    const float NEAR = 0.1f;
++    const float FAR = 120.0f;
++
++    Renderer renderer;
++    Display display("MeshSimplification", DISPLAY_WIDTH, DISPLAY_HEIGHT, &renderer);
++    std::cout.setstate(std::ios_base::failbit); // suppress junk output to console from igl::opengl::glfw::Viewer
++    auto scene = std::make_shared<SCENE>(STRINGIFY(SCENE), &display);
++    std::cout.clear(); // re-enable output to console
++    auto viewport = std::make_shared<Viewport>("viewport", 0, 0, DISPLAY_WIDTH, DISPLAY_HEIGHT);
++    scene->Init(CAMERA_ANGLE, DISPLAY_WIDTH, DISPLAY_HEIGHT, NEAR, FAR);
++    renderer.AddViewport(scene);
++    display.LaunchRendering(true);
++
++    return 0;
++}
++
++
++//#include "BasicScene.h"
++//#include "SimpleScene.h"
++//
++//using namespace cg3d;
++//
++//int main()
++//{
++//    const int DISPLAY_WIDTH = 1600;
++//    const int DISPLAY_HEIGHT = 800;
++//    const float CAMERA_ANGLE = 45.0f;
++//    const float NEAR = 0.1f;
++//    const float FAR = 120.0f;
++//
++//    Renderer renderer;
++//    Display display("MeshSimplification", DISPLAY_WIDTH, DISPLAY_HEIGHT, &renderer);
++//    std::cout.setstate(std::ios_base::failbit); // suppress junk output to console from igl::opengl::glfw::Viewer
++//    auto scene1 = std::make_shared<SimpleScene>("SimpleScene", &display);
++//    auto scene2 = std::make_shared<BasicScene>("BasicScene", &display);
++//    std::cout.clear(); // re-enable output to console
++//    scene1->Init(CAMERA_ANGLE, DISPLAY_WIDTH / 2, DISPLAY_HEIGHT, NEAR, FAR);
++//    scene2->Init(CAMERA_ANGLE, DISPLAY_WIDTH / 2, DISPLAY_HEIGHT, NEAR, FAR);
++//    auto viewport1 = std::make_shared<Viewport>("LeftViewport", 0, 0, DISPLAY_WIDTH / 2, DISPLAY_HEIGHT, scene1);
++//    auto viewport2 = std::make_shared<Viewport>("RightViewport", DISPLAY_WIDTH / 2, 0, DISPLAY_WIDTH / 2, DISPLAY_HEIGHT, scene2);
++//    renderer.AddViewport(viewport1);
++//    renderer.AddViewport(viewport2);
++//    display.LaunchRendering(true);
++//
++//    return 0;
++//}

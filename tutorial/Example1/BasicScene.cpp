@@ -30,8 +30,10 @@ void BasicScene::Init(float fov, int width, int height, float near, float far)
  
     material->AddTexture(0, "textures/box0.bmp", 2);
     auto sphereMesh{IglLoader::MeshFromFiles("sphere_igl", "data/sphere.obj")};
-    auto cylMesh{IglLoader::MeshFromFiles("cyl_igl","data/camel_b.obj")};
+    auto cylMesh{IglLoader::MeshFromFiles("cyl_igl","data/arm.obj")};
     auto cubeMesh{IglLoader::MeshFromFiles("cube_igl","data/cube.off")};
+
+    auto cubeMesh1 = Mesh::Cube();
     
     sphere1 = Model::Create( "sphere",sphereMesh, material);
     cyl = Model::Create( "cyl", cylMesh, material);
@@ -40,7 +42,7 @@ void BasicScene::Init(float fov, int width, int height, float near, float far)
     sphere1->showWireframe = true;
     sphere1->Translate({-3,0,0});
     cyl->Translate({3,0,0});
-    cyl->Scale(0.12f);
+    cyl->Scale(3.0f);
     cyl->showWireframe = true;
     cube->showWireframe = true;
     camera->Translate(20, Axis::Z);
@@ -55,7 +57,7 @@ void BasicScene::Init(float fov, int width, int height, float near, float far)
   // If an edge were collapsed, we'd collapse it to these points:
     Eigen::MatrixXd V, C;
     int num_collapsed;
-
+  /*
   // Function to reset original mesh and data structures
     V = mesh[0]->data[0].vertices;
     F = mesh[0]->data[0].faces;
@@ -68,6 +70,7 @@ void BasicScene::Init(float fov, int width, int height, float near, float far)
     std::cout<< "edges to faces: \n" << EF.transpose() <<std::endl;
     std::cout<< "faces to edges: \n "<< EMAP.transpose()<<std::endl;
     std::cout<< "edges indices: \n" << EI.transpose() <<std::endl;
+    */
 
 }
 
@@ -76,5 +79,7 @@ void BasicScene::Update(const Program& program, const Eigen::Matrix4f& proj, con
     Scene::Update(program, proj, view, model);
     program.SetUniform4f("lightColor", 1.0f, 1.0f, 1.0f, 0.5f);
     program.SetUniform4f("Kai", 1.0f, 1.0f, 1.0f, 1.0f);
-    //cube->Rotate(0.01f, Axis::All);
+    cube->Rotate(0.001f, Axis::XYZ);
+    sphere1->Rotate(0.01f, Axis::XYZ);
+    cyl->Rotate(0.01f, Axis::Y);
 }

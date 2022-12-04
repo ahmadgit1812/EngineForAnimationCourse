@@ -114,10 +114,14 @@ void Scene::KeyCallback(Viewport* viewport, int x, int y, int key, int scancode,
                 glfwSetWindowShouldClose(window, GLFW_TRUE);
                 break;
             case GLFW_KEY_UP:
-                camera->RotateInSystem(system, 0.1f, Axis::X);
+                if(pickedModel != nullptr)
+                    pickedModel->meshIndex = std::min(pickedModel->meshMaxIndex, pickedModel->meshIndex+1);
+                //camera->RotateInSystem(system, 0.1f, Axis::X);
                 break;
             case GLFW_KEY_DOWN:
-                camera->RotateInSystem(system, -0.1f, Axis::X);
+                if(pickedModel != nullptr)
+                    pickedModel->meshIndex = std::max(0, pickedModel->meshIndex-1);
+                //camera->RotateInSystem(system, -0.1f, Axis::X);
                 break;
             case GLFW_KEY_LEFT:
                 camera->RotateInSystem(system, 0.1f, Axis::Y);
@@ -142,6 +146,20 @@ void Scene::KeyCallback(Viewport* viewport, int x, int y, int key, int scancode,
                 break;
             case GLFW_KEY_F:
                 camera->TranslateInSystem(system, {0, 0, -0.05f});
+                break;
+            case GLFW_KEY_SPACE:
+                if(pickedModel != nullptr) {
+                    std::vector<std::shared_ptr<Mesh>> meshList = pickedModel->GetMeshList();
+                    int max_data_index = -1;
+                    for (auto &mesh: meshList)
+                        max_data_index = std::max(mesh->simplify(std::ceil(mesh->meshDataStructure.num_of_edges * 0.1)), max_data_index);
+
+                    if (max_data_index > -1) {
+                        pickedModel->SetMeshList(meshList);
+                        pickedModel->meshIndex = max_data_index;
+                        pickedModel->meshMaxIndex = max_data_index ;
+                    }
+                }
                 break;
         }
     }

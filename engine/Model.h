@@ -41,9 +41,11 @@ public:
     bool showWireframe = false;
     Eigen::Vector4f wireframeColor{0, 0, 0, 0};
     int meshIndex = 0;
+    int meshMaxIndex = 0;
+
 
     inline std::shared_ptr<Mesh> GetMesh(int index = 0) const { return meshList[index]; }
-    inline const std::vector<std::shared_ptr<Mesh>>& GetMeshList() const { return meshList; }
+    inline std::vector<std::shared_ptr<Mesh>> GetMeshList() const { return meshList; }
     void SetMeshList(std::vector<std::shared_ptr<Mesh>> _meshList);
     void UpdateDataAndDrawMeshes(const Program& program, bool _showFaces, bool bindTextures); // helper function
 
