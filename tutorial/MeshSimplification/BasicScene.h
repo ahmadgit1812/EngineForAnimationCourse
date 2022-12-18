@@ -12,5 +12,7 @@ public:
     void Update(const cg3d::Program& program, const Eigen::Matrix4f& proj, const Eigen::Matrix4f& view, const Eigen::Matrix4f& model) override;
 
 private:
-    std::shared_ptr<cg3d::Model> cube;
+    std::shared_ptr<Movable> root;
+    std::shared_ptr<cg3d::Model> sphere1, sphere2;
+    bool is_collision_detected=false;
 };
